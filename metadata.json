@@ -1,0 +1,6 @@
+{
+  "name": "Central Mesh - Dashboard de Estoque",
+  "description": "Painel de controle logístico e comercial interativo para análise de estoque, KPIs e movimentações da Central Mesh.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
