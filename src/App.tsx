@@ -19,15 +19,6 @@ export default function App() {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-4 print:hidden">
-          <button 
-            onClick={() => window.print()}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-bold text-[10px] uppercase tracking-widest transition-colors shadow-sm"
-          >
-            <Printer className="w-4 h-4" />
-            Exportar Diretoria
-          </button>
-        </div>
       </header>
 
       <main className="flex-1 flex flex-col p-4 sm:p-6 lg:p-8 w-full max-w-[1600px] mx-auto print:max-w-none print:p-0">

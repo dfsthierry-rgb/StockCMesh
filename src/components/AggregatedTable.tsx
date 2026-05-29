@@ -23,6 +23,9 @@ export function AggregatedTable({ data }: AggregatedTableProps) {
   const [sortField, setSortField] = useState<keyof GroupedItem>('valorTotal');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
 
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 50;
+
   const groupedData = useMemo(() => {
     const map = new Map<string, GroupedItem>();
     
@@ -75,6 +78,14 @@ export function AggregatedTable({ data }: AggregatedTableProps) {
     return result;
   }, [data, sortField, sortDirection]);
 
+  // Reset page when data or sort changes
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [data.length, sortField, sortDirection]);
+
+  const totalPages = Math.ceil(groupedData.length / itemsPerPage);
+  const paginatedData = groupedData.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
   const handleSort = (field: keyof GroupedItem) => {
     if (field === sortField) {
       setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
@@ -123,7 +134,7 @@ export function AggregatedTable({ data }: AggregatedTableProps) {
             </tr>
           </thead>
           <tbody className="text-slate-300">
-            {groupedData.map((item, idx) => (
+            {paginatedData.map((item, idx) => (
               <tr 
                 key={item.id + idx} 
                 className="border-b border-slate-800/50 transition-colors hover:bg-white/5"
@@ -145,6 +156,56 @@ export function AggregatedTable({ data }: AggregatedTableProps) {
                 </td>
               </tr>
             ))}
+            {groupedData.length > 0 && (
+              <tr className="bg-[#131721] font-bold text-sm border-t border-slate-700/80">
+                <td colSpan={2} className="p-3 text-left text-white uppercase tracking-wider text-[11px] font-bold">
+                  Soma Total do Relatório ({groupedData.length} Grupos)
+                </td>
+                <td className="p-3 text-right font-mono text-slate-400">
+                  {new Intl.NumberFormat('pt-BR').format(
+                    groupedData.reduce((acc, curr) => acc + curr.qtdSkus, 0)
+                  )}
+                </td>
+                <td className="p-3 text-right font-mono text-indigo-300">
+                  {new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 2 }).format(
+                    groupedData.reduce((acc, curr) => acc + curr.qtyTotal, 0)
+                  )}
+                </td>
+                <td className="p-3 text-right font-mono text-emerald-400">
+                  {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                    groupedData.reduce((acc, curr) => acc + curr.valorTotal, 0)
+                  )}
+                </td>
+              </tr>
+            )}
+            
+            {totalPages > 1 && (
+              <tr className="print:hidden">
+                <td colSpan={5} className="p-4 bg-[#0A0C10] border-t border-slate-800">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-500 font-mono">
+                      Página {currentPage} de {totalPages} ({groupedData.length} grupos)
+                    </span>
+                    <div className="flex gap-2">
+                       <button 
+                        onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                        disabled={currentPage === 1}
+                        className="px-3 py-1 bg-[#1A1F26] text-white text-xs disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[#2D3748] rounded"
+                      >
+                        Anterior
+                      </button>
+                      <button 
+                        onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                        disabled={currentPage === totalPages}
+                        className="px-3 py-1 bg-[#1A1F26] text-white text-xs disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[#2D3748] rounded"
+                      >
+                        Próxima
+                      </button>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

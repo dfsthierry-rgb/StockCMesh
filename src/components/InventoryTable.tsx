@@ -12,6 +12,9 @@ export function InventoryTable({ data }: InventoryTableProps) {
   const [sortField, setSortField] = useState<keyof InventoryItem>('estoqueValorizado');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
 
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 50;
+
   const filteredAndSortedData = useMemo(() => {
     let result = [...data];
     
@@ -41,6 +44,14 @@ export function InventoryTable({ data }: InventoryTableProps) {
 
     return result;
   }, [data, searchTerm, sortField, sortDirection]);
+
+  // Reset page relative to search
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, sortField, sortDirection, data.length]);
+
+  const totalPages = Math.ceil(filteredAndSortedData.length / itemsPerPage);
+  const paginatedData = filteredAndSortedData.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
 
   const handleSort = (field: keyof InventoryItem) => {
     if (field === sortField) {
@@ -112,7 +123,7 @@ export function InventoryTable({ data }: InventoryTableProps) {
             </tr>
           </thead>
           <tbody className="text-slate-300">
-            {filteredAndSortedData.slice(0, 1500).map((item, idx) => (
+            {paginatedData.map((item, idx) => (
               <tr 
                 key={item.id + idx} 
                 className={cn(
@@ -129,9 +140,12 @@ export function InventoryTable({ data }: InventoryTableProps) {
                 <td className="p-3 text-center text-slate-400 font-mono text-[10px]">{item.unidade}</td>
                 <td className="p-3">
                   <span className={cn(
-                    "px-2 py-0.5 rounded text-[9px] font-bold border",
-                    item.grupoDiasParados === '> 180 d' ? "bg-red-500/20 text-red-400 border-red-500/20" :
-                    item.grupoDiasParados === '91-180 d' ? "bg-amber-500/20 text-amber-400 border-amber-500/20" :
+                    "px-2 py-0.5 rounded text-[9px] font-bold border whitespace-nowrap",
+                    item.grupoDiasParados === '> 720 d' ? "bg-red-800/20 text-red-500 border-red-800/20" :
+                    item.grupoDiasParados === '541-720 d' ? "bg-red-500/20 text-red-400 border-red-500/20" :
+                    item.grupoDiasParados === '361-540 d' ? "bg-orange-500/20 text-orange-400 border-orange-500/20" :
+                    item.grupoDiasParados === '181-360 d' ? "bg-amber-600/20 text-amber-500 border-amber-600/20" :
+                    item.grupoDiasParados === '91-180 d' ? "bg-amber-400/20 text-amber-300 border-amber-400/20" :
                     item.grupoDiasParados === '31-90 d' ? "bg-blue-500/20 text-blue-400 border-blue-500/20" :
                     "bg-indigo-500/20 text-indigo-400 border-indigo-500/20"
                   )}>
@@ -159,15 +173,57 @@ export function InventoryTable({ data }: InventoryTableProps) {
             ))}
             {filteredAndSortedData.length === 0 && (
               <tr>
-                <td colSpan={7} className="p-6 text-center text-slate-500 text-xs">
+                <td colSpan={8} className="p-6 text-center text-slate-500 text-xs">
                   Nenhum item encontrado.
                 </td>
               </tr>
             )}
-            {filteredAndSortedData.length > 1500 && (
+            
+            {/* Dynamic Total Geral Row */}
+            {filteredAndSortedData.length > 0 && (
+              <tr className="bg-[#131721] font-bold text-sm border-t border-slate-700/80">
+                <td colSpan={3} className="p-3 text-left text-white uppercase tracking-wider text-[11px] font-bold">
+                  Soma Total do Relatório ({filteredAndSortedData.length} SKUs)
+                </td>
+                <td colSpan={2} className="p-3"></td>
+                <td className="p-3 text-right font-mono text-indigo-300">
+                  {new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 2 }).format(
+                    filteredAndSortedData.reduce((acc, curr) => acc + curr.estoque, 0)
+                  )}
+                </td>
+                <td className="p-3 text-right font-mono text-emerald-400">
+                  {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                    filteredAndSortedData.reduce((acc, curr) => acc + curr.estoqueValorizado, 0)
+                  )}
+                </td>
+                <td className="p-3"></td>
+              </tr>
+            )}
+
+            {totalPages > 1 && (
               <tr className="print:hidden">
-                <td colSpan={7} className="p-4 text-center text-[10px] uppercase tracking-widest text-slate-500 bg-[#0A0C10]">
-                  Exibindo os primeiros 1500 itens de {filteredAndSortedData.length} resultados.
+                <td colSpan={8} className="p-4 bg-[#0A0C10] border-t border-slate-800">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-500 font-mono">
+                      Página {currentPage} de {totalPages} ({filteredAndSortedData.length} itens)
+                    </span>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                        disabled={currentPage === 1}
+                        className="px-3 py-1 bg-[#1A1F26] text-white text-xs disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[#2D3748] rounded"
+                      >
+                        Anterior
+                      </button>
+                      <button 
+                        onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                        disabled={currentPage === totalPages}
+                        className="px-3 py-1 bg-[#1A1F26] text-white text-xs disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[#2D3748] rounded"
+                      >
+                        Próxima
+                      </button>
+                    </div>
+                  </div>
                 </td>
               </tr>
             )}

@@ -6,10 +6,16 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+html, body, #root {
+  background-color: #0A0C10;
+  color: #f1f5f9;
+  height: 100%;
+}
+
 @media print {
   @page {
-    margin: 10mm;
-    size: A4 portrait;
+    margin: 8mm;
+    size: A4 landscape;
   }
   
   body, #root {
@@ -17,6 +23,7 @@
     color: #f1f5f9 !important;
     height: auto !important;
     overflow: visible !important;
+    zoom: 0.8;
   }
 
   .print\:hidden {
