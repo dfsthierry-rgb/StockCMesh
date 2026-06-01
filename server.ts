@@ -1,9 +1,10 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import { createServer as createViteServer } from "vite";
 
-const DATA_DIR = path.join(process.cwd(), "data");
+const DATA_DIR = path.join(os.tmpdir(), "central-mesh-data");
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -45,8 +46,10 @@ async function startServer() {
     }
   });
 
+  const isProd = process.env.NODE_ENV === "production" || fs.existsSync(path.join(process.cwd(), "dist", "index.html"));
+
   // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
+  if (!isProd) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

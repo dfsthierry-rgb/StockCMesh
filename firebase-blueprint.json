@@ -1,0 +1,27 @@
+{
+  "entities": {
+    "dataset": {
+      "title": "Dataset",
+      "description": "Estoque compartilhado da Central Mesh contendo itens de inventário.",
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "description": "Lista de itens de estoque no dataset"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marcador de tempo da criação"
+        }
+      },
+      "required": ["items", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/datasets/{datasetId}": {
+      "schema": "dataset",
+      "description": "Coleção de compartilhamento de estoques"
+    }
+  }
+}

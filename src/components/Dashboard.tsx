@@ -1,6 +1,10 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { InventoryItem } from '../types';
 import { exportToExcel, exportToCSV } from '../utils/export';
+import { saveDataset, getDataset } from '../lib/firestoreService';
+import { useReactToPrint } from 'react-to-print';
+import { jsPDF } from 'jspdf';
+import html2canvas from 'html2canvas';
 import { StatCard } from './StatCard';
 import { InventoryTable } from './InventoryTable';
 import { AggregatedTable } from './AggregatedTable';
@@ -20,15 +24,49 @@ const PIE_COLORS = ['#10b981', '#f59e0b', '#ef4444', '#cbd5e1']; // A, B, C, Out
 const AGING_COLORS = ['#3b82f6', '#10b981', '#fbbf24', '#f59e0b', '#ea580c', '#ef4444', '#991b1b']; // 0-30, 31-90, 91-180, 181-360, 361-540, 541-720, > 720
 
 export function Dashboard() {
-  // Data States
-  const [data, setData] = useState<InventoryItem[]>([]);
+  // Data States loading synchronously from localStorage for instant, offline-friendly access
+  const [data, setData] = useState<InventoryItem[]>(() => {
+    try {
+      const cached = localStorage.getItem('last_dataset_items');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn("Could not load last offline data", e);
+    }
+    return [];
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Tab Control
-  const [activeTab, setActiveTab] = useState<'config' | 'resumo' | 'valor' | 'quantidade' | 'abc' | 'aging' | 'tabela'>('config');
+  // Default tab is 'resumo' if we already have offline analysis data loaded
+  const [activeTab, setActiveTab] = useState<'config' | 'resumo' | 'valor' | 'quantidade' | 'abc' | 'aging' | 'tabela'>(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('datasetId')) return 'resumo';
+    try {
+      const cached = localStorage.getItem('last_dataset_items');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return 'resumo';
+        }
+      }
+    } catch (e) {}
+    return 'config';
+  });
   const [viewMode, setViewMode] = useState<'detailed' | 'aggregated'>('detailed');
+  const [analysisMode, setAnalysisMode] = useState<'valor' | 'quantidade'>('valor');
+  const [hideZeroes, setHideZeroes] = useState<boolean>(true);
+  const componentRef = useRef<HTMLDivElement>(null);
+
+  const handlePrint = useReactToPrint({
+    contentRef: componentRef,
+    documentTitle: 'Relatorio_CentralMesh',
+  });
 
   // Filters
   const [selectedMaterial, setSelectedMaterial] = useState<string>('Todos');
@@ -38,26 +76,108 @@ export function Dashboard() {
   const [selectedSubClasseABC, setSelectedSubClasseABC] = useState<string>('Todos');
   const [selectedGrupoDias, setSelectedGrupoDias] = useState<string>('Todos');
   const [shareUrl, setShareUrl] = useState<string>('');
+  const [pdfLoading, setPdfLoading] = useState(false);
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const datasetId = urlParams.get('datasetId');
+    
     if (datasetId) {
       setShareUrl(window.location.href);
       setLoading(true);
-      fetch(`/api/dataset/${datasetId}`)
-        .then(res => res.json())
+      getDataset(datasetId)
         .then(savedData => {
-          if (Array.isArray(savedData) && savedData.length > 0) {
+          if (savedData && Array.isArray(savedData) && savedData.length > 0) {
             setData(savedData);
             setActiveTab('resumo');
+            try {
+              localStorage.setItem('last_dataset_id', datasetId);
+              localStorage.setItem('last_dataset_items', JSON.stringify(savedData));
+            } catch (err) {
+              console.warn("localStorage quota exceeded caching loaded dataset", err);
+            }
+          } else {
+            // Backup fallback to local express api
+            fetch(`/api/dataset/${datasetId}`)
+              .then(res => res.json())
+              .then(apiData => {
+                if (Array.isArray(apiData) && apiData.length > 0) {
+                  setData(apiData);
+                  setActiveTab('resumo');
+                  try {
+                    localStorage.setItem('last_dataset_id', datasetId);
+                    localStorage.setItem('last_dataset_items', JSON.stringify(apiData));
+                  } catch (err) {
+                    console.warn("localStorage quota exceeded caching fallback dataset", err);
+                  }
+                }
+              })
+              .catch(err => console.error("API backup failed too", err));
           }
         })
         .catch(err => {
-          console.error("Failed to load generic dataset", err);
-          setError("Falha ao carregar os dados compartilhados.");
+          console.error("Failed to load Firebase dataset", err);
+          setError("Falha ao carregar os dados compartilhados do Firebase.");
         })
         .finally(() => setLoading(false));
+    } else {
+      // Automatic startup loader with no datasetId in URL
+      const lastId = localStorage.getItem('last_dataset_id');
+      const lastItemsStr = localStorage.getItem('last_dataset_items');
+      
+      if (lastItemsStr) {
+        try {
+          const lastItems = JSON.parse(lastItemsStr);
+          if (Array.isArray(lastItems) && lastItems.length > 0) {
+            setData(lastItems);
+            setActiveTab('resumo');
+            if (lastId) {
+              const newUrl = new URL(window.location.href);
+              newUrl.searchParams.set('datasetId', lastId);
+              window.history.replaceState({ path: newUrl.href }, '', newUrl.href);
+              setShareUrl(newUrl.href);
+            }
+          }
+        } catch (e) {
+          console.error("Could not parse cached last items", e);
+        }
+      } else if (lastId) {
+        // If items are not cached, but we have the ID, let's fetch it from Firestore in background
+        setLoading(true);
+        const newUrl = new URL(window.location.href);
+        newUrl.searchParams.set('datasetId', lastId);
+        window.history.replaceState({ path: newUrl.href }, '', newUrl.href);
+        setShareUrl(newUrl.href);
+
+        getDataset(lastId)
+          .then(savedData => {
+            if (savedData && Array.isArray(savedData) && savedData.length > 0) {
+              setData(savedData);
+              setActiveTab('resumo');
+              try {
+                localStorage.setItem('last_dataset_items', JSON.stringify(savedData));
+              } catch (err) {
+                console.warn("localStorage storage limit", err);
+              }
+            } else {
+              fetch(`/api/dataset/${lastId}`)
+                .then(res => res.json())
+                .then(apiData => {
+                  if (Array.isArray(apiData) && apiData.length > 0) {
+                    setData(apiData);
+                    setActiveTab('resumo');
+                    try {
+                      localStorage.setItem('last_dataset_items', JSON.stringify(apiData));
+                    } catch (err) {
+                      console.warn("localStorage storage limit fallback", err);
+                    }
+                  }
+                });
+            }
+          })
+          .catch(err => console.error("Background auto-retrieve failed", err))
+          .finally(() => setLoading(false));
+      }
     }
   }, []);
 
@@ -171,22 +291,61 @@ export function Dashboard() {
             setData(validItems);
             setActiveTab('resumo');
 
-            // Save to backend
-            fetch('/api/dataset', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(validItems)
-            })
-            .then(res => res.json())
-            .then(resData => {
-               if (resData.id) {
-                 const newUrl = new URL(window.location.href);
-                 newUrl.searchParams.set('datasetId', resData.id);
-                 window.history.pushState({ path: newUrl.href }, '', newUrl.href);
-                 setShareUrl(newUrl.href);
-               }
-            })
-            .catch(err => console.error("Could not save dataset to backend", err));
+            // Save to offline storage immediately for instantaneous startup reload
+            try {
+              localStorage.setItem('last_dataset_items', JSON.stringify(validItems));
+            } catch (err) {
+              console.warn("Storage quota exceeded saving copy", err);
+            }
+
+            // Save to Firebase first, fallback to API
+            saveDataset(validItems)
+              .then(id => {
+                if (id) {
+                  const newUrl = new URL(window.location.href);
+                  newUrl.searchParams.set('datasetId', id);
+                  window.history.pushState({ path: newUrl.href }, '', newUrl.href);
+                  setShareUrl(newUrl.href);
+                  try {
+                    localStorage.setItem('last_dataset_id', id);
+                    localStorage.setItem('last_dataset_items', JSON.stringify(validItems));
+                  } catch (err) {
+                    console.warn("Storage quota exceeded caching imported items with ID", err);
+                  }
+                }
+                
+                // Keep local api back-compatibility
+                fetch('/api/dataset', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(validItems)
+                }).catch(err => console.warn("Backup save to local api failed", err));
+              })
+              .catch(err => {
+                console.error("Could not save dataset to Firebase", err);
+                // Fallback to local server api
+                fetch('/api/dataset', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(validItems)
+                })
+                .then(res => res.json())
+                .then(resData => {
+                   if (resData.id) {
+                     const newUrl = new URL(window.location.href);
+                     newUrl.searchParams.set('datasetId', resData.id);
+                     window.history.pushState({ path: newUrl.href }, '', newUrl.href);
+                     setShareUrl(newUrl.href);
+                     try {
+                       localStorage.setItem('last_dataset_id', resData.id);
+                       localStorage.setItem('last_dataset_items', JSON.stringify(validItems));
+                     } catch (err) {
+                       console.warn("Storage quota exceeded caching fallback", err);
+                     }
+                   }
+                })
+                .catch(err2 => console.error("Backup save also failed", err2));
+              });
           } else {
             alert('Não foi possível identificar colunas compatíveis no seu arquivo.');
           }
@@ -221,6 +380,9 @@ export function Dashboard() {
   // Filtered dataset
   const filteredData = useMemo(() => {
     return data.filter(item => {
+      const isZero = analysisMode === 'valor' ? item.estoqueValorizado === 0 : item.estoque === 0;
+      if (hideZeroes && isZero) return false;
+
       const m1 = selectedMaterial === 'Todos' || item.material === selectedMaterial;
       const m2 = selectedMalha === 'Todos' || item.malha === selectedMalha;
       const m3 = selectedFio === 'Todos' || item.fio === selectedFio;
@@ -230,7 +392,7 @@ export function Dashboard() {
       
       return m1 && m2 && m3 && m4 && m5 && m6;
     });
-  }, [data, selectedMaterial, selectedMalha, selectedFio, selectedClasseABC, selectedSubClasseABC, selectedGrupoDias]);
+  }, [data, selectedMaterial, selectedMalha, selectedFio, selectedClasseABC, selectedSubClasseABC, selectedGrupoDias, hideZeroes, analysisMode]);
 
   // RESET All filters helper
   const handleResetFilters = () => {
@@ -242,12 +404,109 @@ export function Dashboard() {
     setSelectedGrupoDias('Todos');
   };
 
+  const exportCurrentTabToPDF = async () => {
+    const element = document.getElementById('dashboard-pdf-content');
+    if (!element) {
+      alert('Não foi possível encontrar a área de visualização para exportar.');
+      return;
+    }
+    setPdfLoading(true);
+    try {
+      // Create high resolution image from the DOM element
+      const canvas = await html2canvas(element, {
+        scale: 2, // 2x scale for crisp rendering
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#0A0C10',
+        onclone: (clonedDoc) => {
+          const cloneContainer = clonedDoc.getElementById('dashboard-pdf-content');
+          if (cloneContainer) {
+            cloneContainer.style.padding = '24px';
+            cloneContainer.style.backgroundColor = '#0A0C10';
+            cloneContainer.style.color = '#e2e8f0';
+
+            // Insert a luxurious PDF header at the top
+            const pdfHeader = clonedDoc.createElement('div');
+            pdfHeader.style.marginBottom = '20px';
+            pdfHeader.style.border = '1px solid #1e293b';
+            pdfHeader.style.borderRadius = '8px';
+            pdfHeader.style.padding = '20px';
+            pdfHeader.style.backgroundColor = '#0F1116';
+            
+            const formatter = analysisMode === 'valor' ? currencyFormatter : numberFormatter;
+            
+            pdfHeader.innerHTML = `
+              <div style="display: flex; justify-content: space-between; align-items: center; font-family: system-ui, -apple-system, sans-serif;">
+                <div>
+                  <h1 style="color: #ffffff; font-size: 18px; font-weight: 850; margin: 0; letter-spacing: -0.025em; text-transform: uppercase;">
+                    CENTRAL MESH <span style="color: #6366f1;">| ${analysisMode === 'valor' ? 'DASHBOARD FINANCEIRO' : 'DASHBOARD OPERACIONAL'}</span>
+                  </h1>
+                  <p style="color: #94a3b8; font-size: 10px; margin: 4px 0 0 0; letter-spacing: 0.1em; text-transform: uppercase; font-family: monospace;">
+                    Relatório de Auditoria e Otimização de Ativos — Visão Diretoria
+                  </p>
+                </div>
+                <div style="text-align: right; font-family: monospace; font-size: 10px; color: #64748b; line-height: 1.4;">
+                  <div>DATA DE EMISSÃO: ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</div>
+                  <div>ABA SELECIONADA: ${activeTab.toUpperCase()}</div>
+                  <div>ITENS ATIVOS EXPORTADOS: ${numberFormatter(kpis.items)} FILTRADOS</div>
+                </div>
+              </div>
+              <div style="height: 3px; background: linear-gradient(90deg, #6366f1 0%, #a855f7 50%, #10b981 100%); border-radius: 4px; margin-top: 12px;"></div>
+            `;
+            cloneContainer.insertBefore(pdfHeader, cloneContainer.firstChild);
+
+            // Hide PDF-excluded items inside clone
+            const excludes = clonedDoc.querySelectorAll('.pdf-exclude');
+            excludes.forEach(el => {
+              (el as HTMLElement).style.setProperty('display', 'none', 'important');
+            });
+
+            // Adjust tables
+            const tables = clonedDoc.querySelectorAll('table');
+            tables.forEach(table => {
+              (table as HTMLElement).style.width = '100%';
+            });
+          }
+        }
+      });
+
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const imgWidth = 210; // A4 standard width
+      const pageHeight = 297; // A4 standard height
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      
+      let heightLeft = imgHeight;
+      let position = 0;
+
+      // First page
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
+      heightLeft -= pageHeight;
+
+      // Multiple pages handler
+      while (heightLeft > 0) {
+        position = heightLeft - imgHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
+        heightLeft -= pageHeight;
+      }
+
+      pdf.save(`Central_Mesh_Relatorio_${analysisMode}_${activeTab}_${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (err) {
+      console.error('Error in PDF generation:', err);
+      alert('Erro ao exportar PDF.');
+    } finally {
+      setPdfLoading(false);
+    }
+  };
+
   // KPIs
   const kpis = useMemo(() => {
     let val = 0;
     let qty = 0;
     let itemsCount = 0;
     let valorParadoCritico = 0;
+    let qtyParadoCritico = 0;
     let diasCoberturaSum = 0;
     let countComCobertura = 0;
 
@@ -261,6 +520,7 @@ export function Dashboard() {
 
       if (item.diasParado > 180) {
         valorParadoCritico += item.estoqueValorizado || 0;
+        qtyParadoCritico += item.estoque || 0;
       }
 
       if (item.diasCobertura > 0) {
@@ -276,6 +536,7 @@ export function Dashboard() {
       qtyTotal: qty,
       items: itemsCount,
       valorCritico: valorParadoCritico,
+      qtyCritico: qtyParadoCritico,
       avgCobertura
     };
   }, [filteredData]);
@@ -312,7 +573,7 @@ export function Dashboard() {
   const valueByMaterial = useMemo(() => {
     const reduced = filteredData.reduce((acc, current) => {
       const mat = current.material || 'Outros/N/A';
-      acc[mat] = (acc[mat] || 0) + current.estoqueValorizado;
+      acc[mat] = (acc[mat] || 0) + (analysisMode === 'valor' ? current.estoqueValorizado : current.estoque);
       return acc;
     }, {} as Record<string, number>);
     
@@ -320,20 +581,20 @@ export function Dashboard() {
       .map(([name, value]) => ({ name, value: Number(value) }))
       .sort((a, b) => b.value - a.value)
       .slice(0, 8);
-  }, [filteredData]);
+  }, [filteredData, analysisMode]);
 
   // Charts data: Curva ABC
   const valueByClass = useMemo(() => {
     const reduced = filteredData.reduce((acc, current) => {
       const cls = current.classeABC ? `Classe ${current.classeABC}` : 'Sem Classe';
-      acc[cls] = (acc[cls] || 0) + current.estoqueValorizado;
+      acc[cls] = (acc[cls] || 0) + (analysisMode === 'valor' ? current.estoqueValorizado : current.estoque);
       return acc;
     }, {} as Record<string, number>);
 
     return Object.entries(reduced)
       .map(([name, value]) => ({ name, value: Number(value) }))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [filteredData]);
+  }, [filteredData, analysisMode]);
 
   // Charts data: Aging Buckets
   const valueByAging = useMemo(() => {
@@ -347,22 +608,23 @@ export function Dashboard() {
       { name: '> 720 d', value: 0 }
     ];
     filteredData.forEach(item => {
-      if (item.diasParado <= 30) buckets[0].value += item.estoqueValorizado;
-      else if (item.diasParado <= 90) buckets[1].value += item.estoqueValorizado;
-      else if (item.diasParado <= 180) buckets[2].value += item.estoqueValorizado;
-      else if (item.diasParado <= 360) buckets[3].value += item.estoqueValorizado;
-      else if (item.diasParado <= 540) buckets[4].value += item.estoqueValorizado;
-      else if (item.diasParado <= 720) buckets[5].value += item.estoqueValorizado;
-      else buckets[6].value += item.estoqueValorizado;
+      const val = analysisMode === 'valor' ? item.estoqueValorizado : item.estoque;
+      if (item.diasParado <= 30) buckets[0].value += val;
+      else if (item.diasParado <= 90) buckets[1].value += val;
+      else if (item.diasParado <= 180) buckets[2].value += val;
+      else if (item.diasParado <= 360) buckets[3].value += val;
+      else if (item.diasParado <= 540) buckets[4].value += val;
+      else if (item.diasParado <= 720) buckets[5].value += val;
+      else buckets[6].value += val;
     });
     return buckets;
-  }, [filteredData]);
+  }, [filteredData, analysisMode]);
 
   // Charts data: Top Valor vs Qtd
   const valueAndQtyTop = useMemo(() => {
     return [...filteredData]
-      .filter(i => i.estoqueValorizado > 0)
-      .sort((a, b) => b.estoqueValorizado - a.estoqueValorizado)
+      .filter(i => (analysisMode === 'valor' ? i.estoqueValorizado : i.estoque) > 0)
+      .sort((a, b) => (analysisMode === 'valor' ? b.estoqueValorizado - a.estoqueValorizado : b.estoque - a.estoque))
       .slice(0, 10)
       .map(item => ({
         name: item.codigo.slice(0, 15) + (item.codigo.length > 15 ? '...' : ''),
@@ -371,50 +633,50 @@ export function Dashboard() {
         quantidade: item.estoque,
         unidade: item.unidade
       }));
-  }, [filteredData]);
+  }, [filteredData, analysisMode]);
 
       // Charts data: Subgrupo ABC
   const valueBySubclass = useMemo(() => {
     const reduced = filteredData.reduce((acc, current) => {
       const sub = current.subClasseABC || 'N/A';
-      acc[sub] = (acc[sub] || 0) + current.estoqueValorizado;
+      acc[sub] = (acc[sub] || 0) + (analysisMode === 'valor' ? current.estoqueValorizado : current.estoque);
       return acc;
     }, {} as Record<string, number>);
 
     return Object.entries(reduced)
       .map(([name, value]) => ({ name, value: Number(value) }))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [filteredData]);
+  }, [filteredData, analysisMode]);
 
   // Transform data specifically for a Pareto Dynamic Chart
   const paretoData = useMemo(() => {
-    // Sort items by value descending
+    const isValor = analysisMode === 'valor';
+    // Sort items descending based on the mode
     const sorted = [...filteredData]
-      .filter(i => i.estoqueValorizado > 0)
-      .sort((a, b) => b.estoqueValorizado - a.estoqueValorizado);
+      .filter(i => (isValor ? i.estoqueValorizado : i.estoque) > 0)
+      .sort((a, b) => (isValor ? b.estoqueValorizado - a.estoqueValorizado : b.estoque - a.estoque));
       
-    // Because 3801 SKUs is too big for a single chart, we can bucket them by percentage blocks 
-    // or take the top N items + "Others"
     // To show a smooth Pareto curve, let's take the Top 50 Items, and group the remaining.
     const topItems = sorted.slice(0, 50);
     const otherItems = sorted.slice(50);
     
-    let totalValue = sorted.reduce((sum, item) => sum + item.estoqueValorizado, 0);
+    let totalMetric = sorted.reduce((sum, item) => sum + (isValor ? item.estoqueValorizado : item.estoque), 0);
     let cumulative = 0;
     
     const pareto = topItems.map((item, index) => {
-      cumulative += item.estoqueValorizado;
+      const metricVal = isValor ? item.estoqueValorizado : item.estoque;
+      cumulative += metricVal;
       return {
         name: `Top ${index + 1}`,
         desc: item.descricao,
         sku: item.codigo,
-        valor: item.estoqueValorizado,
-        accumulatedPct: (cumulative / totalValue) * 100
+        valor: metricVal,
+        accumulatedPct: totalMetric > 0 ? (cumulative / totalMetric) * 100 : 0
       };
     });
 
     if (otherItems.length > 0) {
-      const otherVal = otherItems.reduce((acc, item) => acc + item.estoqueValorizado, 0);
+      const otherVal = otherItems.reduce((acc, item) => acc + (isValor ? item.estoqueValorizado : item.estoque), 0);
       cumulative += otherVal;
       pareto.push({
         name: 'Demais SKUs',
@@ -426,7 +688,7 @@ export function Dashboard() {
     }
 
     return pareto;
-  }, [filteredData]);
+  }, [filteredData, analysisMode]);
 
   // Business Action Insights
   const businessInsights = useMemo(() => {
@@ -472,6 +734,12 @@ export function Dashboard() {
   function numberFormatter(value: number) {
     return new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 0 }).format(value);
   }
+  
+  const activeFormatter = analysisMode === 'valor' ? currencyFormatter : numberFormatter;
+  
+  function formatMetric(value: number) {
+    return analysisMode === 'valor' ? currencyFormatter(value) : numberFormatter(value) + ' UN';
+  }
 
   if (loading) {
     return (
@@ -489,10 +757,37 @@ export function Dashboard() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4 max-w-full">
       
+      {/* GLOBAL MOOD/DASHBOARD TOGGLE */}
+      {data.length > 0 && activeTab !== 'config' && (
+        <div className="flex w-full mb-2 print:hidden pdf-exclude">
+          <div className="bg-[#0A0C10] border-2 border-slate-700/50 rounded-xl p-1.5 flex w-full max-w-2xl mx-auto shadow-2xl relative overflow-hidden">
+            <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/10 to-emerald-500/10 opacity-30 pointer-events-none"></div>
+            <button 
+              onClick={() => setAnalysisMode('valor')}
+              className={`flex-1 relative flex items-center justify-center gap-3 py-3 px-6 rounded-lg transition-all duration-300 ${analysisMode === 'valor' ? 'bg-indigo-600 shadow-[0_0_20px_rgba(79,70,229,0.4)] text-white scale-[1.02]' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+            >
+              <div className="flex flex-col items-center">
+                <span className="text-sm font-black uppercase tracking-widest leading-none">Dashboard Financeiro</span>
+                <span className="text-[9px] text-indigo-200 mt-1 uppercase opacity-80">Análise Focada em Capital (R$)</span>
+              </div>
+            </button>
+            <button 
+              onClick={() => setAnalysisMode('quantidade')}
+              className={`flex-1 relative flex items-center justify-center gap-3 py-3 px-6 rounded-lg transition-all duration-300 ${analysisMode === 'quantidade' ? 'bg-emerald-600 shadow-[0_0_20px_rgba(16,185,129,0.4)] text-white scale-[1.02]' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+            >
+              <div className="flex flex-col items-center">
+                <span className="text-sm font-black uppercase tracking-widest leading-none">Dashboard Operacional</span>
+                <span className="text-[9px] text-emerald-200 mt-1 uppercase opacity-80">Análise Focada em Quantidade (UN)</span>
+              </div>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Control Tabs inside App */}
-      <div className="flex flex-wrap items-center justify-between border-b border-slate-800 gap-2 print:hidden">
+      <div className="flex flex-wrap items-center justify-between border-b border-slate-800 gap-2 print:hidden pdf-exclude">
         <div className="flex overflow-x-auto pb-0.5 whitespace-nowrap gap-1">
           <button 
             onClick={() => setActiveTab('config')}
@@ -513,13 +808,13 @@ export function Dashboard() {
                 onClick={() => setActiveTab('valor')}
                 className={`px-4 py-2 text-xs font-bold uppercase tracking-widest transition-all border-b-2 hover:text-white ${activeTab === 'valor' ? 'border-indigo-500 text-white bg-indigo-500/5' : 'border-transparent text-slate-400'}`}
               >
-                💰 Visão Valor
+                📊 Visão Categorias
               </button>
               <button 
                 onClick={() => setActiveTab('quantidade')}
                 className={`px-4 py-2 text-xs font-bold uppercase tracking-widest transition-all border-b-2 hover:text-white ${activeTab === 'quantidade' ? 'border-indigo-500 text-white bg-indigo-500/5' : 'border-transparent text-slate-400'}`}
               >
-                📦 Valor & Qtd
+                📈 Composto Top SKUs
               </button>
               <button 
                 onClick={() => setActiveTab('abc')}
@@ -541,12 +836,21 @@ export function Dashboard() {
         {data.length > 0 && activeTab !== 'config' && (
           <div className="flex items-center gap-2 pb-1">
             <button 
-              onClick={() => window.print()}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1F2937] hover:bg-[#2E3B4E] text-white rounded text-[10px] uppercase font-bold tracking-widest transition-all border border-slate-750 shadow-sm"
-              title="Imprimir visualização atual como PDF. Melhor uso na aba 'Resumo'."
+              onClick={exportCurrentTabToPDF}
+              disabled={pdfLoading}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-[10px] uppercase font-bold tracking-widest transition-all shadow-sm ${pdfLoading ? 'bg-indigo-900 text-indigo-300 cursor-not-allowed opacity-70' : 'bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer'}`}
+              title="Gerar e salvar um relatório PDF executivo com gráficos em formato A4"
             >
               <Printer className="w-3.5 h-3.5" />
-              PDF (Print)
+              {pdfLoading ? 'Gerando...' : 'Exportar PDF'}
+            </button>
+            <button 
+              onClick={() => handlePrint()}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1F2937] hover:bg-[#2E3B4E] text-slate-300 rounded text-[10px] uppercase font-bold tracking-widest transition-all border border-slate-750 shadow-sm"
+              title="Abre a caixa de diálogo nativa de impressão (Pode ser salvo como PDF)"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              Imprimir (Físico)
             </button>
             <button 
               onClick={() => exportToExcel(filteredData, activeTab)}
@@ -554,7 +858,7 @@ export function Dashboard() {
               title="Exportar planilha Excel com várias abas completas para apresentação"
             >
               <FileSpreadsheet className="w-3.5 h-3.5" />
-              Exportar Diretoria (.xlsx)
+              Exportar (.xlsx)
             </button>
             <button 
               onClick={() => exportToCSV(filteredData)}
@@ -631,10 +935,63 @@ export function Dashboard() {
       {/* Show Content only if data is loaded and not in config tab */}
       {data.length > 0 && activeTab !== 'config' && (
         <>
-          {/* Header & Filters Card - Dynamic Filter */}
-      <div className="flex flex-col gap-4 bg-[#0F1116] border border-slate-800 rounded-lg p-4 print:hidden">
-        <div className="flex items-center justify-between">
-          <h2 className="text-xs font-bold text-indigo-400 uppercase tracking-widest pb-1 border-b border-slate-800 inline-block">Filtros Avançados Integrados</h2>
+      {/* Capture Viewport for high fidelity PDF exports */}
+      <div id="dashboard-pdf-content" ref={componentRef} className="flex flex-col gap-4">
+      
+      {/* KPI Cards section (Shared or displayed dynamically) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+        <StatCard 
+          title={analysisMode === 'valor' ? "Valor Total em Estoque" : "Quantidade em Estoque"}
+          value={analysisMode === 'valor' ? currencyFormatter(kpis.valorTotal) : numberFormatter(kpis.qtyTotal)}
+          icon={analysisMode === 'valor' ? Box : Package}
+          subtitle={analysisMode === 'valor' ? "Capital imobilizado total" : "Todas as unidades de medida"}
+          className={`lg:col-span-1 shadow-md ${analysisMode === 'quantidade' ? 'text-indigo-400' : ''}`}
+        />
+        <StatCard 
+          title={analysisMode === 'valor' ? "Quantidade em Estoque" : "Valor Total em Estoque"}
+          value={analysisMode === 'valor' ? numberFormatter(kpis.qtyTotal) : currencyFormatter(kpis.valorTotal)}
+          icon={analysisMode === 'valor' ? Package : Box}
+          subtitle={analysisMode === 'valor' ? "Todas as unidades de medida" : "Capital imobilizado total"}
+          className={`lg:col-span-1 shadow-md ${analysisMode === 'valor' ? 'text-indigo-400' : ''}`}
+        />
+        <StatCard 
+          title="SKUs Ativos" 
+          value={`${numberFormatter(kpis.items)} de ${numberFormatter(data.length)}`}
+          icon={Layers}
+          subtitle="Itens com saldo físico"
+          className="lg:col-span-1 shadow-md"
+        />
+        <StatCard 
+          title={analysisMode === 'valor' ? "Capital Parado (>180d)" : "Qtd Parada (>180d)"}
+          value={analysisMode === 'valor' ? currencyFormatter(kpis.valorCritico) : numberFormatter(kpis.qtyCritico)}
+          icon={AlertCircle}
+          subtitle="Risco de perda / obsolescência"
+          className="lg:col-span-1 border-red-500/50 bg-[#1A1116]"
+        />
+        <StatCard 
+          title="Giro Médio Cobertura" 
+          value={`${kpis.avgCobertura} Dias`}
+          icon={Activity}
+          subtitle="Tempo médio de consumo"
+          className="lg:col-span-1 shadow-md"
+        />
+      </div>
+
+      {/* Header & Filters Card - Dynamic Filter */}
+      <div className="flex flex-col gap-4 bg-[#0F1116] border border-slate-800 rounded-lg p-4 print:hidden pdf-exclude">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-4">
+            <h2 className="text-xs font-bold text-indigo-400 uppercase tracking-widest pb-1 border-b border-slate-800 inline-block">Filtros Avançados Integrados</h2>
+            <label className="flex items-center gap-2 cursor-pointer border border-slate-700 bg-[#1A1F26] px-2 py-1 rounded">
+              <input 
+                type="checkbox" 
+                checked={hideZeroes} 
+                onChange={(e) => setHideZeroes(e.target.checked)}
+                className="w-3 h-3 accent-indigo-500"
+              />
+              <span className="text-[10px] text-slate-300 font-bold uppercase tracking-widest">Ocultar Saldos Zerados</span>
+            </label>
+          </div>
           {(selectedMaterial !== 'Todos' || selectedMalha !== 'Todos' || selectedFio !== 'Todos' || selectedClasseABC !== 'Todos' || selectedSubClasseABC !== 'Todos' || selectedGrupoDias !== 'Todos') && (
             <button 
               onClick={handleResetFilters}
@@ -718,45 +1075,6 @@ export function Dashboard() {
             </select>
           </div>
         </div>
-      </div>
-
-      {/* KPI Cards section (Shared or displayed dynamically) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-        <StatCard 
-          title="Valor Total em Estoque" 
-          value={currencyFormatter(kpis.valorTotal)}
-          icon={Box}
-          subtitle="Capital imobilizado total"
-          className="lg:col-span-1 shadow-md"
-        />
-        <StatCard 
-          title="Quantidade em Estoque" 
-          value={numberFormatter(kpis.qtyTotal)}
-          icon={Package}
-          subtitle="Todas as unidades de medida"
-          className="lg:col-span-1 shadow-md text-indigo-400"
-        />
-        <StatCard 
-          title="SKUs Ativos" 
-          value={`${numberFormatter(kpis.items)} de ${numberFormatter(data.length)}`}
-          icon={Layers}
-          subtitle="Itens com saldo físico"
-          className="lg:col-span-1 shadow-md"
-        />
-        <StatCard 
-          title="Capital Parado (>180d)" 
-          value={currencyFormatter(kpis.valorCritico)}
-          icon={AlertCircle}
-          subtitle="Risco de perda / obsolescência"
-          className="lg:col-span-1 border-red-500/50 bg-[#1A1116]"
-        />
-        <StatCard 
-          title="Giro Médio Cobertura" 
-          value={`${kpis.avgCobertura} Dias`}
-          icon={Activity}
-          subtitle="Tempo médio de consumo"
-          className="lg:col-span-1 shadow-md"
-        />
       </div>
 
       {/* ==================== TAB 1: RESUMO EXECUTIVO (ONE PAGE BOARD SLIDE) ==================== */}
@@ -844,8 +1162,8 @@ export function Dashboard() {
                   <BarChart data={valueByAging}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
                     <XAxis dataKey="name" stroke="#64748b" tick={{ fontSize: 10 }} />
-                    <YAxis tickFormatter={currencyFormatter} stroke="#64748b" tick={{ fontSize: 10 }} />
-                    <Tooltip formatter={currencyFormatter} contentStyle={{ backgroundColor: '#1A1F26', border: '1px solid #334155' }} />
+                    <YAxis tickFormatter={activeFormatter} stroke="#64748b" tick={{ fontSize: 10 }} />
+                    <Tooltip formatter={activeFormatter} contentStyle={{ backgroundColor: '#1A1F26', border: '1px solid #334155' }} />
                     <Bar isAnimationActive={false} dataKey="value" radius={[4, 4, 0, 0]}>
                       {valueByAging.map((entry, index) => (
                         <Cell key={`cell-${index}`} fill={AGING_COLORS[index % AGING_COLORS.length]} />
@@ -876,7 +1194,7 @@ export function Dashboard() {
                           <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
                         ))}
                       </Pie>
-                      <Tooltip formatter={currencyFormatter} />
+                      <Tooltip formatter={activeFormatter} />
                     </PieChart>
                   </ResponsiveContainer>
                 </div>
@@ -887,7 +1205,7 @@ export function Dashboard() {
                         <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] }}></span>
                         <span className="text-[10px] font-bold text-white uppercase">{cls.name}</span>
                       </div>
-                      <span className="text-xs font-mono text-slate-300 ml-4">{currencyFormatter(cls.value)}</span>
+                      <span className="text-xs font-mono text-slate-300 ml-4">{formatMetric(cls.value)}</span>
                     </div>
                   ))}
                 </div>
@@ -923,14 +1241,14 @@ export function Dashboard() {
             
             {/* Value by Material Chart */}
             <div className="lg:col-span-8 bg-[#0F1116] rounded-lg border border-slate-800 p-4">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">Distribuição de Capital por Material (Top 8 Ofensores)</h3>
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">{analysisMode === 'valor' ? 'Distribuição de Faturamento por Material (Top 8 Ofensores)' : 'Distribuição de Quantidades por Material (Top 8 Ofensores)'}</h3>
               <div className="h-[280px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={valueByMaterial} layout="vertical" margin={{ top: 0, right: 30, left: 30, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#1e293b" />
-                    <XAxis type="number" tickFormatter={currencyFormatter} stroke="#64748b" tick={{ fontSize: 10 }} />
+                    <XAxis type="number" tickFormatter={activeFormatter} stroke="#64748b" tick={{ fontSize: 10 }} />
                     <YAxis dataKey="name" type="category" stroke="#64748b" tick={{ fontSize: 10 }} width={120} />
-                    <Tooltip formatter={currencyFormatter} contentStyle={{ backgroundColor: '#1A1F26', border: '1px solid #334155' }} />
+                    <Tooltip formatter={activeFormatter} contentStyle={{ backgroundColor: '#1A1F26', border: '1px solid #334155' }} />
                     <Bar isAnimationActive={false} dataKey="value" radius={[0, 4, 4, 0]}>
                       {valueByMaterial.map((entry, index) => (
                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
@@ -956,7 +1274,7 @@ export function Dashboard() {
                       <div key={item.name} className="flex flex-col gap-1">
                         <div className="flex justify-between items-center text-xs">
                           <span className="font-bold text-white uppercase">{item.name}</span>
-                          <span className="font-mono text-indigo-400 font-semibold">{currencyFormatter(item.value)} ({pct.toFixed(1)}%)</span>
+                          <span className="font-mono text-indigo-400 font-semibold">{formatMetric(item.value)} ({pct.toFixed(1)}%)</span>
                         </div>
                         <div className="w-full bg-[#1A1F26] rounded-full h-2">
                           <div className="h-2 rounded-full" style={{ width: `${pct}%`, backgroundColor: COLORS[idx % COLORS.length] }}></div>
@@ -1013,7 +1331,7 @@ export function Dashboard() {
             
             {/* Chart: Value vs Quantity Top 10 */}
             <div className="lg:col-span-8 bg-[#0F1116] rounded-lg border border-slate-800 p-4">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2 font-sans">Composto Comercial: Top 10 SKU Valor de Mercado vs Volume Físico</h3>
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2 font-sans">Composto Comercial: Top 10 SKUs - Faturamento vs Volume</h3>
               <div className="h-[280px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <ComposedChart data={valueAndQtyTop} margin={{ top: 10, right: 10, left: 10, bottom: 20 }}>
@@ -1023,7 +1341,7 @@ export function Dashboard() {
                     <YAxis yAxisId="right" orientation="right" stroke="#10b981" tick={{ fontSize: 9 }} />
                     <Tooltip contentStyle={{ backgroundColor: '#1A1F26', border: '1px solid #334155' }} />
                     <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }} />
-                    <Bar isAnimationActive={false} yAxisId="left" dataKey="valor" fill="#6366f1" radius={[3, 3, 0, 0]} name="Valor Financeiro (R$)" />
+                    <Bar isAnimationActive={false} yAxisId="left" dataKey="valor" fill="#6366f1" radius={[3, 3, 0, 0]} name="Faturamento (R$)" />
                     <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="quantidade" stroke="#10b981" strokeWidth={2.5} name="Qtd de Itens" dot={{ r: 4 }} />
                   </ComposedChart>
                 </ResponsiveContainer>
@@ -1081,14 +1399,14 @@ export function Dashboard() {
                   <ComposedChart data={paretoData} margin={{ top: 10, right: 10, left: 10, bottom: 20 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
                     <XAxis dataKey="name" stroke="#64748b" tick={{ fontSize: 9 }} angle={-45} textAnchor="end" />
-                    <YAxis yAxisId="left" tickFormatter={currencyFormatter} stroke="#818cf8" tick={{ fontSize: 10 }} />
+                    <YAxis yAxisId="left" tickFormatter={activeFormatter} stroke="#818cf8" tick={{ fontSize: 10 }} />
                     <YAxis yAxisId="right" orientation="right" tickFormatter={(v) => `${Math.round(v)}%`} stroke="#10b981" tick={{ fontSize: 10 }} domain={[0, 100]} />
                     <Tooltip 
-                      formatter={(val, name, props) => name === '% Acumulado' ? `${Number(val).toFixed(2)}%` : currencyFormatter(Number(val))} 
+                      formatter={(val, name, props) => name === '% Acumulado' ? `${Number(val).toFixed(2)}%` : formatMetric(Number(val))} 
                       contentStyle={{ backgroundColor: '#1A1F26', border: '1px solid #334155' }} 
                     />
                     <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }} />
-                    <Bar isAnimationActive={false} yAxisId="left" dataKey="valor" fill="#818cf8" radius={[2, 2, 0, 0]} name="Valor SKU (R$)" />
+                    <Bar isAnimationActive={false} yAxisId="left" dataKey="valor" fill="#818cf8" radius={[2, 2, 0, 0]} name={analysisMode === 'valor' ? 'Valor SKU (R$)' : 'Quantid. SKU (UN)'} />
                     <Line isAnimationActive={false} yAxisId="right" type="step" dataKey="accumulatedPct" stroke="#10b981" strokeWidth={2} name="% Acumulado" dot={false} activeDot={{ r: 4 }} />
                   </ComposedChart>
                 </ResponsiveContainer>
@@ -1157,9 +1475,9 @@ export function Dashboard() {
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
                     <XAxis dataKey="name" stroke="#64748b" tick={{ fontSize: 10 }} />
-                    <YAxis tickFormatter={currencyFormatter} stroke="#64748b" tick={{ fontSize: 10 }} />
-                    <Tooltip formatter={currencyFormatter} contentStyle={{ backgroundColor: '#1A1F26', border: '1px solid #334155' }} />
-                    <Area isAnimationActive={false} type="monotone" dataKey="value" stroke="#f59e0b" fillOpacity={1} fill="url(#colorVal)" strokeWidth={2} name="Capital Retido (R$)" />
+                    <YAxis tickFormatter={activeFormatter} stroke="#64748b" tick={{ fontSize: 10 }} />
+                    <Tooltip formatter={activeFormatter} contentStyle={{ backgroundColor: '#1A1F26', border: '1px solid #334155' }} />
+                    <Area isAnimationActive={false} type="monotone" dataKey="value" stroke="#f59e0b" fillOpacity={1} fill="url(#colorVal)" strokeWidth={2} name={analysisMode === 'valor' ? 'Capital Retido (R$)' : 'Qtd Retida (UN)'} />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -1228,6 +1546,8 @@ export function Dashboard() {
         ) : (
           <AggregatedTable data={filteredData} />
         )}
+      </div>
+
       </div>
 
       </>
