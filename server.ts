@@ -1,10 +1,9 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import os from "os";
 import { createServer as createViteServer } from "vite";
 
-const DATA_DIR = path.join(os.tmpdir(), "central-mesh-data");
+const DATA_DIR = path.join(process.cwd(), "data");
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });

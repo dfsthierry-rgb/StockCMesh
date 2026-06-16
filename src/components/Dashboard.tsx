@@ -110,14 +110,38 @@ export function Dashboard() {
                   } catch (err) {
                     console.warn("localStorage quota exceeded caching fallback dataset", err);
                   }
+                } else {
+                  throw new Error('Dataset vazio ou não encontrado');
                 }
               })
-              .catch(err => console.error("API backup failed too", err));
+              .catch(err => {
+                console.error("API backup failed too, loading default dataset", err);
+                fetch('/default_dataset.json')
+                  .then(res => res.json())
+                  .then(defaultData => {
+                    if (Array.isArray(defaultData)) {
+                       setData(defaultData);
+                       setActiveTab('resumo');
+                       alert("Aviso: O link compartilhado não pôde ser carregado (possivelmente expirou devido a limitações de hospedagem temporária). Carregando o relatório executivo padrão para demonstração.");
+                       // Remove from URL so they don't get confused
+                       const newUrl = new URL(window.location.href);
+                       newUrl.searchParams.delete('datasetId');
+                       window.history.replaceState({ path: newUrl.href }, '', newUrl.href);
+                    }
+                  }).catch(e => setError("Falha ao carregar os dados. O link compartilhado pode ter expirado."));
+              });
           }
         })
         .catch(err => {
-          console.error("Failed to load Firebase dataset", err);
-          setError("Falha ao carregar os dados compartilhados do Firebase.");
+           console.error("Failed to load Firebase dataset, trying default", err);
+           fetch('/default_dataset.json')
+             .then(res => res.json())
+             .then(defaultData => {
+               if (Array.isArray(defaultData)) {
+                  setData(defaultData);
+                  setActiveTab('resumo');
+               }
+             }).catch(e => setError("Falha ao carregar os dados."));
         })
         .finally(() => setLoading(false));
     } else {
@@ -141,41 +165,21 @@ export function Dashboard() {
         } catch (e) {
           console.error("Could not parse cached last items", e);
         }
-      } else if (lastId) {
-        // If items are not cached, but we have the ID, let's fetch it from Firestore in background
+      } else {
+        // Try to load default dataset bundled with the app
         setLoading(true);
-        const newUrl = new URL(window.location.href);
-        newUrl.searchParams.set('datasetId', lastId);
-        window.history.replaceState({ path: newUrl.href }, '', newUrl.href);
-        setShareUrl(newUrl.href);
-
-        getDataset(lastId)
-          .then(savedData => {
-            if (savedData && Array.isArray(savedData) && savedData.length > 0) {
-              setData(savedData);
-              setActiveTab('resumo');
-              try {
-                localStorage.setItem('last_dataset_items', JSON.stringify(savedData));
-              } catch (err) {
-                console.warn("localStorage storage limit", err);
-              }
-            } else {
-              fetch(`/api/dataset/${lastId}`)
-                .then(res => res.json())
-                .then(apiData => {
-                  if (Array.isArray(apiData) && apiData.length > 0) {
-                    setData(apiData);
-                    setActiveTab('resumo');
-                    try {
-                      localStorage.setItem('last_dataset_items', JSON.stringify(apiData));
-                    } catch (err) {
-                      console.warn("localStorage storage limit fallback", err);
-                    }
-                  }
-                });
-            }
+        fetch('/default_dataset.json')
+          .then(res => {
+             if (res.ok) return res.json();
+             throw new Error('No default dataset');
           })
-          .catch(err => console.error("Background auto-retrieve failed", err))
+          .then(defaultData => {
+             if (Array.isArray(defaultData) && defaultData.length > 0) {
+                setData(defaultData);
+                setActiveTab('resumo');
+             }
+          })
+          .catch(e => console.log('Starting empty, waiting for upload.'))
           .finally(() => setLoading(false));
       }
     }
@@ -412,61 +416,73 @@ export function Dashboard() {
     }
     setPdfLoading(true);
     try {
+      // Add temporary styling directly instead of using onclone
+      // to avoid weird iframe cloning issues with some CSS/charts.
+      
+      const originalPadding = element.style.padding;
+      const originalBackground = element.style.backgroundColor;
+      const originalColor = element.style.color;
+      
+      element.style.padding = '24px';
+      element.style.background = '#0A0C10';
+      element.style.color = '#e2e8f0';
+
+      const excludes = document.querySelectorAll('.pdf-exclude');
+      const originalDisplays: string[] = [];
+      excludes.forEach((el, index) => {
+        originalDisplays[index] = (el as HTMLElement).style.display;
+        (el as HTMLElement).style.setProperty('display', 'none', 'important');
+      });
+
+      // Insert PDF header
+      const pdfHeader = document.createElement('div');
+      pdfHeader.id = 'temp-pdf-header';
+      pdfHeader.style.marginBottom = '20px';
+      pdfHeader.style.border = '1px solid #1e293b';
+      pdfHeader.style.borderRadius = '8px';
+      pdfHeader.style.padding = '20px';
+      pdfHeader.style.backgroundColor = '#0F1116';
+      
+      const formatter = analysisMode === 'valor' ? currencyFormatter : numberFormatter;
+      pdfHeader.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; font-family: system-ui, -apple-system, sans-serif;">
+          <div>
+            <h1 style="color: #ffffff; font-size: 18px; font-weight: 850; margin: 0; letter-spacing: -0.025em; text-transform: uppercase;">
+              CENTRAL MESH <span style="color: #6366f1;">| ${analysisMode === 'valor' ? 'DASHBOARD FINANCEIRO' : 'DASHBOARD OPERACIONAL'}</span>
+            </h1>
+            <p style="color: #94a3b8; font-size: 10px; margin: 4px 0 0 0; letter-spacing: 0.1em; text-transform: uppercase; font-family: monospace;">
+              Relatório de Auditoria e Otimização de Ativos — Visão Diretoria
+            </p>
+          </div>
+          <div style="text-align: right; font-family: monospace; font-size: 10px; color: #64748b; line-height: 1.4;">
+            <div>DATA DE EMISSÃO: ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</div>
+            <div>ABA SELECIONADA: ${activeTab.toUpperCase()}</div>
+            <div>ITENS ATIVOS EXPORTADOS: ${numberFormatter(kpis.items)} FILTRADOS</div>
+          </div>
+        </div>
+        <div style="height: 3px; background: linear-gradient(90deg, #6366f1 0%, #a855f7 50%, #10b981 100%); border-radius: 4px; margin-top: 12px;"></div>
+      `;
+      element.insertBefore(pdfHeader, element.firstChild);
+
       // Create high resolution image from the DOM element
       const canvas = await html2canvas(element, {
-        scale: 2, // 2x scale for crisp rendering
+        scale: 1.5, // Reduced from 2 to avoid memory issues on large tables
         useCORS: true,
         logging: false,
         backgroundColor: '#0A0C10',
-        onclone: (clonedDoc) => {
-          const cloneContainer = clonedDoc.getElementById('dashboard-pdf-content');
-          if (cloneContainer) {
-            cloneContainer.style.padding = '24px';
-            cloneContainer.style.backgroundColor = '#0A0C10';
-            cloneContainer.style.color = '#e2e8f0';
+      });
 
-            // Insert a luxurious PDF header at the top
-            const pdfHeader = clonedDoc.createElement('div');
-            pdfHeader.style.marginBottom = '20px';
-            pdfHeader.style.border = '1px solid #1e293b';
-            pdfHeader.style.borderRadius = '8px';
-            pdfHeader.style.padding = '20px';
-            pdfHeader.style.backgroundColor = '#0F1116';
-            
-            const formatter = analysisMode === 'valor' ? currencyFormatter : numberFormatter;
-            
-            pdfHeader.innerHTML = `
-              <div style="display: flex; justify-content: space-between; align-items: center; font-family: system-ui, -apple-system, sans-serif;">
-                <div>
-                  <h1 style="color: #ffffff; font-size: 18px; font-weight: 850; margin: 0; letter-spacing: -0.025em; text-transform: uppercase;">
-                    CENTRAL MESH <span style="color: #6366f1;">| ${analysisMode === 'valor' ? 'DASHBOARD FINANCEIRO' : 'DASHBOARD OPERACIONAL'}</span>
-                  </h1>
-                  <p style="color: #94a3b8; font-size: 10px; margin: 4px 0 0 0; letter-spacing: 0.1em; text-transform: uppercase; font-family: monospace;">
-                    Relatório de Auditoria e Otimização de Ativos — Visão Diretoria
-                  </p>
-                </div>
-                <div style="text-align: right; font-family: monospace; font-size: 10px; color: #64748b; line-height: 1.4;">
-                  <div>DATA DE EMISSÃO: ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</div>
-                  <div>ABA SELECIONADA: ${activeTab.toUpperCase()}</div>
-                  <div>ITENS ATIVOS EXPORTADOS: ${numberFormatter(kpis.items)} FILTRADOS</div>
-                </div>
-              </div>
-              <div style="height: 3px; background: linear-gradient(90deg, #6366f1 0%, #a855f7 50%, #10b981 100%); border-radius: 4px; margin-top: 12px;"></div>
-            `;
-            cloneContainer.insertBefore(pdfHeader, cloneContainer.firstChild);
-
-            // Hide PDF-excluded items inside clone
-            const excludes = clonedDoc.querySelectorAll('.pdf-exclude');
-            excludes.forEach(el => {
-              (el as HTMLElement).style.setProperty('display', 'none', 'important');
-            });
-
-            // Adjust tables
-            const tables = clonedDoc.querySelectorAll('table');
-            tables.forEach(table => {
-              (table as HTMLElement).style.width = '100%';
-            });
-          }
+      // Cleanup DOM changes
+      element.removeChild(pdfHeader);
+      element.style.padding = originalPadding;
+      element.style.backgroundColor = originalBackground;
+      element.style.color = originalColor;
+      
+      excludes.forEach((el, index) => {
+        if (originalDisplays[index]) {
+          (el as HTMLElement).style.display = originalDisplays[index];
+        } else {
+          (el as HTMLElement).style.removeProperty('display');
         }
       });
 
@@ -492,9 +508,9 @@ export function Dashboard() {
       }
 
       pdf.save(`Central_Mesh_Relatorio_${analysisMode}_${activeTab}_${new Date().toISOString().slice(0, 10)}.pdf`);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error in PDF generation:', err);
-      alert('Erro ao exportar PDF.');
+      alert(`Erro ao exportar PDF: ${err.message || String(err)}`);
     } finally {
       setPdfLoading(false);
     }
