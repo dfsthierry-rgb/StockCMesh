@@ -1,17 +1,14 @@
 {
   "name": "react-example",
-  "homepage": "https://dfsthierry-rgb.github.io/StockCMesh/",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && cp docs/index.html docs/404.html && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=docs/server.cjs",
-    "predeploy": "npm run build",
-    "deploy": "gh-pages -d docs",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "preview": "vite preview",
-    "start": "node docs/server.cjs",
-    "clean": "rm -rf docs dist server.js data",
+    "start": "node dist/server.cjs",
+    "clean": "rm -rf dist server.js data",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -41,7 +38,6 @@
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
-    "gh-pages": "^6.3.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
