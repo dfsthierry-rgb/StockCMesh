@@ -116,7 +116,7 @@ export function Dashboard() {
               })
               .catch(err => {
                 console.error("API backup failed too, loading default dataset", err);
-                fetch('/default_dataset.json')
+                fetch('./default_dataset.json')
                   .then(res => res.json())
                   .then(defaultData => {
                     if (Array.isArray(defaultData)) {
@@ -134,7 +134,7 @@ export function Dashboard() {
         })
         .catch(err => {
            console.error("Failed to load Firebase dataset, trying default", err);
-           fetch('/default_dataset.json')
+           fetch('./default_dataset.json')
              .then(res => res.json())
              .then(defaultData => {
                if (Array.isArray(defaultData)) {
@@ -168,7 +168,7 @@ export function Dashboard() {
       } else {
         // Try to load default dataset bundled with the app
         setLoading(true);
-        fetch('/default_dataset.json')
+        fetch('./default_dataset.json')
           .then(res => {
              if (res.ok) return res.json();
              throw new Error('No default dataset');
