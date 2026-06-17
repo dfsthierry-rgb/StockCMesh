@@ -45,7 +45,7 @@ async function startServer() {
     }
   });
 
-  const isProd = process.env.NODE_ENV === "production" || fs.existsSync(path.join(process.cwd(), "dist", "index.html"));
+  const isProd = process.env.NODE_ENV === "production" || fs.existsSync(path.join(process.cwd(), "docs", "index.html"));
   console.log(`Server starting in ${isProd ? "production" : "development"} mode`);
 
   if (!isProd) {
@@ -55,10 +55,10 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
+    const docsPath = path.join(process.cwd(), "docs");
+    app.use(express.static(docsPath));
     app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+      res.sendFile(path.join(docsPath, "index.html"));
     });
   }
 

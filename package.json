@@ -6,12 +6,12 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && cp dist/index.html dist/404.html && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "build": "vite build && cp docs/index.html docs/404.html && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=docs/server.cjs",
     "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist",
+    "deploy": "gh-pages -d docs",
     "preview": "vite preview",
-    "start": "node dist/server.cjs",
-    "clean": "rm -rf dist server.js data",
+    "start": "node docs/server.cjs",
+    "clean": "rm -rf docs dist server.js data",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
